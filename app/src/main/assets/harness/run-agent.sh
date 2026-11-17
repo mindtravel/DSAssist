@@ -102,7 +102,8 @@ start)
     --unshare-pid --die-with-parent --new-session
   [ -d /mnt/wsl ] && set -- "$@" --ro-bind /mnt/wsl /mnt/wsl
   # A read-only agent gets its folder read-only from the system itself, not by being asked.
-  if [ "$agent" = plan ] && [ "$engine" = claude ]; then
+  # This is the same for every engine: opencode's own plan mode is a policy, not a wall.
+  if [ "$agent" = plan ]; then
     set -- "$@" --ro-bind "$dir" "$dir" --chdir "$dir"
   else
     set -- "$@" --bind "$dir" "$dir" --chdir "$dir"
@@ -112,7 +113,7 @@ start)
   if [ -f "$dir/.git" ]; then
     common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
     if [ -n "$common" ] && [ -d "$common" ]; then
-      if [ "$agent" = plan ] && [ "$engine" = claude ]; then set -- "$@" --ro-bind "$common" "$common"; else set -- "$@" --bind "$common" "$common"; fi
+      if [ "$agent" = plan ]; then set -- "$@" --ro-bind "$common" "$common"; else set -- "$@" --bind "$common" "$common"; fi
     fi
   fi
 
