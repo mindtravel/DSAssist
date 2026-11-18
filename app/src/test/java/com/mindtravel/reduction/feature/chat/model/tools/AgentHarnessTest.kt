@@ -32,12 +32,22 @@ class AgentHarnessTest {
               start) printf '%s\n' "${'$'}2" "${'$'}3" "${'$'}4" > "${'$'}d/started"; echo "RUN t1" ;;
               status) cat "${'$'}d/status" ;;
               stop) echo "${'$'}3" > "${'$'}d/stopped"; echo STOPPED ;;
+              changes) echo "${'$'}2" > "${'$'}d/compared"; echo " main.kt | 2 +-" ;;
             esac
         """.trimIndent() + "\n"
 
         fun status(text: String) = File(dir, "status").writeText(text)
         fun started(): List<String> = File(dir, "started").takeIf { it.isFile }?.readLines().orEmpty()
         fun stopped(): String = File(dir, "stopped").takeIf { it.isFile }?.readText()?.trim().orEmpty()
+        fun compared(): String = File(dir, "compared").takeIf { it.isFile }?.readText()?.trim().orEmpty()
+    }
+
+    /** A shell that remembers every command line it was given. */
+    private class RecordingShell(private val shell: LocalShell = LocalShell()) : PcGateway by shell {
+        val commands = ArrayList<String>()
+        override fun exec(profile: PcProfile, command: String): String = shell.exec(profile, command).also { commands += command }
+        override fun send(profile: PcProfile, command: String, input: ByteArray): String =
+            shell.send(profile, command, input).also { commands += command }
     }
 
     private class Approval(private val answer: Boolean) : ToolApprovalHost {
@@ -166,6 +176,42 @@ class AgentHarnessTest {
         tool(launcher, approval = reading).execute(args("action" to "start", "task" to "看代码", "folder" to "project"))
         assertEquals("reading the project needs no approval", 0, reading.asked)
         assertEquals(listOf("plan", "/home/u/project"), launcher.started().take(2))
+    }
+
+    @Test
+    fun theKeyIsNeverOnTheCommandLine() {
+        val received = File(Files.createTempDirectory("harness-key").toFile(), "env")
+        val record = "printf '%s' \"\$AGENT_KEY\" > '${received.absolutePath}'; echo 'RUN t1'\n"
+        val shell = RecordingShell()
+        val harness = AgentHarness(shell, PcProfile("host", 22, "user"), "sk-test_KEY-1", "deepseek-flash") { record }
+
+        harness.start(AgentHarness.Agent.BUILD, "/home/u/p", "问")
+
+        assertEquals("the launcher still gets the key", "sk-test_KEY-1", received.readText())
+        assertEquals(1, shell.commands.size)
+        // Neither in plain text nor inside the encoded script: the process list shows both.
+        val encodedKey = java.util.Base64.getEncoder().encodeToString("sk-test_KEY-1".toByteArray())
+        shell.commands.forEach { command ->
+            assertFalse(command, command.contains("sk-test_KEY-1"))
+            assertFalse(command, command.contains(encodedKey.take(12)))
+        }
+    }
+
+    @Test
+    fun theProjectsChangesAreComparedByTheLauncherNotByGitOnTheComputer() {
+        val launcher = FakeLauncher()
+        launcher.status("STATE done 0\n$textEvent\n")
+        val shell = RecordingShell()
+        val tool = RunAgentTool(
+            AgentHarness(shell, PcProfile("host", 22, "user"), "sk-test_KEY-1", "deepseek-flash") { launcher.script },
+            runs, "/home/u/project", "/home/u/agents", true, Approval(true), 300, 20
+        )
+
+        val said = tool.execute(args("action" to "start", "task" to "改代码", "folder" to "project", "access" to "write"))
+
+        assertTrue(said, said.contains("git diff --stat:\nmain.kt | 2 +-"))
+        assertEquals("/home/u/project", launcher.compared())
+        shell.commands.forEach { assertFalse("git ran outside the launcher: $it", it.contains("git -C")) }
     }
 
     @Test
