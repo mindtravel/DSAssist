@@ -83,6 +83,12 @@ class AgentHarness(
         launcher("stop", folder, id)
     }
 
+    /**
+     * `git diff --stat` of [folder]. Worked out by the launcher in a sandbox of its own: the folder's
+     * .git is the agent's to write, and git runs what its config names while it compares.
+     */
+    fun changes(folder: String): String = launcher("changes", folder)
+
     /** Runs a plain command on the computer, outside any agent. */
     fun exec(command: String): String = pcGateway.exec(profile, command)
 
@@ -105,13 +111,13 @@ class AgentHarness(
     }
 
     private fun launcher(vararg args: String, withModel: Boolean = false, engine: Engine = Engine.OPENCODE): String {
-        val environment = if (withModel) {
-            "AGENT_KEY=${quote(apiKey)} AGENT_MODEL=${quote("deepseek/$model")} " +
-                "AGENT_ENGINE=${engine.wire} AGENT_TIMEOUT=${engine.timeoutSeconds} "
-        } else {
-            ""
-        }
-        return runScript("sh -s --", launcherScript(), *args, environment = environment)
+        if (!withModel) return runScript("sh -s --", launcherScript(), *args)
+        // The key goes in on standard input. On the command line, as an environment assignment or inside
+        // the encoded script, anyone on the computer could read it from the process list.
+        val prelude = "IFS= read -r AGENT_KEY || true\n" +
+            "export AGENT_KEY AGENT_MODEL=${quote("deepseek/$model")} " +
+            "AGENT_ENGINE=${engine.wire} AGENT_TIMEOUT=${engine.timeoutSeconds}\n"
+        return runScript("sh -s --", prelude + launcherScript(), *args, input = (apiKey + "\n").toByteArray(Charsets.UTF_8))
     }
 
     companion object {

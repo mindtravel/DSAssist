@@ -17,6 +17,8 @@
 # most 3 MB each, in the order of their names; the rest are named on a line
 # "=====IMAGE SKIPPED <name>=====" and not sent.
 #   run-agent.sh stop   <folder> <id>                    prints: STOPPED
+#   run-agent.sh changes <folder>                        prints: git diff --stat of <folder>, worked out in a
+#                                                        sandbox of its own (see below), or nothing
 #
 # The agent may do anything opencode can do — run commands, use the network, write
 # files — but the only part of the file system it can change is <folder>. The rest of
@@ -55,6 +57,21 @@ locate() {
   esac
   name=$(printf '%s' "${dir#"$home"/}" | tr -c 'A-Za-z0-9._-' '_')
   state=$home/.local/share/reduction-agents/$name
+}
+
+# A git worktree keeps its history in its main repository, outside the folder. That repository is
+# let in only when it lists this folder as one of its own worktrees (or, for a submodule, as its
+# work tree): a .git file alone, which an earlier agent may have written, could point anywhere.
+registered() {
+  [ -n "$1" ] && [ -d "$1" ] || return 1
+  self=$(readlink -f "$dir/.git")
+  for entry in "$1"/worktrees/*/gitdir; do
+    [ -f "$entry" ] && [ "$(readlink -f "$(cat "$entry")")" = "$self" ] && return 0
+  done
+  tree=$(git config --file "$1/config" --get core.worktree 2>/dev/null || true)
+  [ -n "$tree" ] || return 1
+  case "$tree" in /*) ;; *) tree=$1/$tree ;; esac
+  [ "$(readlink -f "$tree")" = "$dir" ]
 }
 
 run_dir() {
@@ -106,6 +123,12 @@ start)
     --bind "$run/result" "$home/.reduction-result" \
     --unshare-pid --die-with-parent --new-session
   [ -d /mnt/wsl ] && set -- "$@" --ro-bind /mnt/wsl /mnt/wsl
+  # A read-only system still has doors out: the sockets under /run (the session bus, docker) take
+  # orders from anyone who can reach them. /run is left empty, but for the resolver if it lives there.
+  set -- "$@" --tmpfs /run --unshare-ipc
+  resolver=$(readlink -f /etc/resolv.conf 2>/dev/null || true)
+  case "$resolver" in /run/?*) set -- "$@" --ro-bind "${resolver%/*}" "${resolver%/*}" ;; esac
+
   # A read-only agent gets its folder read-only from the system itself, not by being asked.
   if [ "$agent" = plan ] && [ "$engine" = claude ]; then
     set -- "$@" --ro-bind "$dir" "$dir" --chdir "$dir"
@@ -116,6 +139,7 @@ start)
   # A git worktree keeps its history in the main repository; the agent needs that to use git.
   if [ -f "$dir/.git" ]; then
     common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    registered "$common" || common=
     if [ -n "$common" ] && [ -d "$common" ]; then
       if [ "$agent" = plan ] && [ "$engine" = claude ]; then set -- "$@" --ro-bind "$common" "$common"; else set -- "$@" --bind "$common" "$common"; fi
     fi
@@ -135,9 +159,18 @@ start)
     set -- "$@" timeout "$limit" "$claude" -p --output-format stream-json --verbose --permission-mode auto
     input=$run/prompt.txt
   else
-    set -- "$@" --ro-bind "$home/.opencode" "$home/.opencode" --bind "$state" "$home/.local/share"
+    # opencode's own data for this folder, and nothing else of $state: the runs' pid and exit files
+    # stay out of reach, so an agent cannot point "stop" at another process or fake its own end.
+    set -- "$@" --ro-bind "$home/.opencode" "$home/.opencode" --bind "$state/opencode" "$home/.local/share/opencode"
     [ -d "$home/.config/opencode" ] && set -- "$@" --ro-bind "$home/.config/opencode" "$home/.config/opencode"
-    [ -d "$home/.cache/opencode" ] && set -- "$@" --bind "$home/.cache/opencode" "$home/.cache/opencode"
+    # opencode loads code from its cache (the model providers it installs). The agent writes into a copy
+    # of its own, taken once per folder, never into the one opencode on this computer runs from.
+    if [ ! -d "$state/cache" ]; then
+      mkdir -p "$state/cache.tmp"
+      [ -d "$home/.cache/opencode" ] && cp -a "$home/.cache/opencode/." "$state/cache.tmp/"
+      mv "$state/cache.tmp" "$state/cache"
+    fi
+    set -- "$@" --bind "$state/cache" "$home/.cache/opencode"
     set -- "$@" timeout "$limit" "$opencode" run --format json --model "$model" --agent "$agent" --auto --dir "$dir" "$prompt"
     input=/dev/null
   fi
@@ -199,6 +232,24 @@ stop)
   [ "$pid" -gt 1 ] 2>/dev/null && kill -TERM -- "-$pid" 2>/dev/null || true
   [ -f "$run/exit" ] || echo 143 > "$run/exit"
   printf 'STOPPED\n'
+  ;;
+
+changes)
+  # The folder's .git is the agent's to write, and git runs what its config names (fsmonitor, filters,
+  # diff drivers) while it compares. So the comparison is made where such a program can do no harm:
+  # nothing writable, no network, no home directory; what it prints is all that comes back.
+  locate "${1:?folder}"
+  command -v bwrap >/dev/null 2>&1 || exit 0
+  common=
+  [ -f "$dir/.git" ] && common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  registered "$common" || common=
+  set -- \
+    --clearenv --setenv HOME "$home" --setenv PATH /usr/local/bin:/usr/bin:/bin --setenv LANG C.UTF-8 \
+    --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /mnt --tmpfs /run --tmpfs "$home" \
+    --ro-bind "$dir" "$dir" --unshare-all --die-with-parent --new-session
+  [ -n "$common" ] && set -- "$@" --ro-bind "$common" "$common"
+  bwrap "$@" git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$dir" --no-pager \
+    diff --stat --no-ext-diff --no-textconv 2>/dev/null || true
   ;;
 
 *)
