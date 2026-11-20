@@ -12,9 +12,15 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.mindtravel.reduction.app.AppCore
 import com.mindtravel.reduction.core.Logs
-import com.mindtravel.reduction.feature.settings.data.SettingsRepository
+import com.mindtravel.reduction.feature.voice.VoiceState
+import com.mindtravel.reduction.hardware.audio.AudioRoutes
 import com.mindtravel.reduction.model.wake.KeywordSpotterModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 class WakeWordService : Service() {
 
@@ -84,6 +90,12 @@ class WakeWordService : Service() {
     }
 
     private var detector: WakeWordDetector? = null
+    private val core by lazy { AppCore.get(this) }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val microphone by lazy { WakeMicrophone(core.headsetMic, scope, ::listenOn) }
+    private var unwatch: (() -> Unit)? = null
+    private var preferHeadset = false
+    private var listening = true
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -95,36 +107,66 @@ class WakeWordService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            SettingsRepository(this).update { it.copy(wakeWordEnabled = false) }
+            core.settingsRepository.update { it.copy(wakeWordEnabled = false) }
             stopSelf()
             return START_NOT_STICKY
         }
 
         when (intent?.action) {
             ACTION_PAUSE -> {
+                listening = false
                 detector?.stop()
                 updateNotification("已唤醒，等待回答")
             }
             ACTION_RESTART -> {
                 Logs.add("Wake word listener restarted from the foreground")
                 detector?.stop()
-                startForegroundCompat(buildNotification("正在监听“Hi Reduction”"))
-                startDetector()
+                microphone.refresh(preferHeadset, resume = true)
             }
             ACTION_RESUME -> {
-                startForegroundCompat(buildNotification("正在监听“Hi Reduction”"))
-                startDetector()
+                listening = true
+                startForegroundCompat(buildNotification(listeningText()))
+                microphone.refresh(preferHeadset, resume = true)
             }
             else -> {
-                startForegroundCompat(buildNotification("正在启动唤醒词…"))
-                startDetector()
+                startForegroundCompat(buildNotification(if (listening) listeningText() else "已唤醒，等待回答"))
+                if (unwatch == null) {
+                    unwatch = AudioRoutes.watchHeadsets(this) {
+                        if (unwatch != null) microphone.refresh(preferHeadset)
+                    }
+                }
+                preferHeadset = core.settingsRepository.load().headsetMicEnabled
+                microphone.refresh(preferHeadset, resume = true)
             }
         }
         return START_STICKY
     }
 
-    private fun startDetector() {
-        updateNotification("正在监听“Hi Reduction”")
+    private fun listenOn(input: WakeMicrophone.Input) {
+        if (!listening) return
+        val state = core.voice.state
+        if (state.phase != VoiceState.IDLE &&
+            !(state.phase == VoiceState.REPLYING && !state.okSounding &&
+                core.settingsRepository.load().bargeInEnabled && AudioRoutes.hasHeadsetOutput(this))
+        ) {
+            detector?.stop()
+            return
+        }
+        if (input == WakeMicrophone.Input.CONNECTING) {
+            detector?.stop()
+            updateNotification("正在连接耳机麦克风…")
+            return
+        }
+        startDetector(input == WakeMicrophone.Input.HEADSET)
+    }
+
+    private fun listeningText() = when (microphone.input) {
+        WakeMicrophone.Input.HEADSET -> "正在监听“Hi Reduction” · 耳机麦克风"
+        WakeMicrophone.Input.PHONE -> "正在监听“Hi Reduction” · 手机麦克风"
+        WakeMicrophone.Input.CONNECTING -> "正在连接耳机麦克风…"
+    }
+
+    private fun startDetector(headsetInput: Boolean) {
         val current = detector ?: WakeWordDetector(
             model = KeywordSpotterModel(this, KeywordSpotterModel.Language.ENGLISH),
             onWake = {
@@ -135,18 +177,18 @@ class WakeWordService : Service() {
             onClip = { wav, keyword -> WakeWordBus.clipSink?.invoke(wav, keyword) },
             onListening = {
                 deaf = false
-                updateNotification("正在监听“Hi Reduction”")
+                updateNotification(listeningText())
             },
             onDeaf = { nowDeaf ->
                 deaf = nowDeaf
-                updateNotification(if (nowDeaf) "麦克风被系统收回，点此恢复监听" else "正在监听“Hi Reduction”")
+                updateNotification(if (nowDeaf) "麦克风被系统收回，点此恢复监听" else listeningText())
             },
             onError = { message ->
                 Logs.add("Wake word error: $message")
                 updateNotification(message)
             }
         ).also { detector = it }
-        current.start()
+        current.start(headsetInput)
     }
 
     private fun launchApp() {
@@ -226,9 +268,14 @@ class WakeWordService : Service() {
     }
 
     override fun onDestroy() {
+        isRunning = false
+        listening = false
+        unwatch?.invoke()
+        unwatch = null
+        scope.cancel()
         detector?.release()
         detector = null
-        isRunning = false
+        microphone.close()
         deaf = false
         Logs.add("Wake word service destroyed")
         super.onDestroy()

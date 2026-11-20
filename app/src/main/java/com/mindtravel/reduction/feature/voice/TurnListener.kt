@@ -3,12 +3,15 @@ package com.mindtravel.reduction.feature.voice
 import com.mindtravel.reduction.core.Logs
 import com.mindtravel.reduction.core.audio.AudioGateway
 import com.mindtravel.reduction.hardware.audio.HeadsetMicController
+import com.mindtravel.reduction.hardware.audio.HeadsetMicController.User.TURN
+import com.mindtravel.reduction.hardware.audio.HeadsetMicController.User.WAKE
 import com.mindtravel.reduction.model.voice.RollingAsr
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 
 /**
@@ -53,30 +56,29 @@ class TurnListener(
     private var events: Events? = null
     private var settleJob: Job? = null
 
-    @Volatile
-    private var headsetActive = false
     private var speechStarted = false
+    private var prepareJob: Job? = null
 
-    /**
-     * Opens the microphone ahead of the opening cue, so recording can begin the instant
-     * the cue ends. With a headset microphone the Bluetooth headset first has to switch
-     * to its call mode, which interrupts sound for a moment: that is waited out here,
-     * until the microphone is delivering audio, before anything is played.
-     */
+    /** A wake listener on the headset already established the communication route. */
     override fun prepare(useHeadsetMic: Boolean, onReady: () -> Unit) {
         settleJob?.cancel()
         settleJob = null
         val startedAt = System.currentTimeMillis()
-        scope.launch(Dispatchers.IO) {
-            val switched = useHeadsetMic && !headsetActive && headsetMic.start()
-            if (switched) headsetActive = true
-            recorder.warmUp(useCommunicationSource = headsetActive)
-            val live = if (headsetActive) recorder.awaitAudio(ROUTE_SWITCH_LIMIT_MS) else true
+        prepareJob?.cancel()
+        val requested = useHeadsetMic && headsetMic.request(TURN)
+        prepareJob = scope.launch {
+            val headset = requested && runInterruptible(Dispatchers.IO) { headsetMic.awaitReady(TURN) }
+            if (!headset) headsetMic.release(TURN)
+            val warmRoute = headset && headsetMic.ready(WAKE)
+            val live = runInterruptible(Dispatchers.IO) {
+                recorder.warmUp(useCommunicationSource = headset)
+                !headset || warmRoute || recorder.awaitAudio(ROUTE_SWITCH_LIMIT_MS)
+            }
             Logs.add(
-                "Turn prepared in ${System.currentTimeMillis() - startedAt}ms headsetMic=$headsetActive" +
+                "Turn prepared in ${System.currentTimeMillis() - startedAt}ms headsetMic=$headset reusedWakeRoute=$warmRoute" +
                     if (live) "" else " (no audio yet)"
             )
-            withContext(Dispatchers.Main) { onReady() }
+            onReady()
         }
     }
 
@@ -113,20 +115,16 @@ class TurnListener(
     }
 
     override fun cancel() {
+        prepareJob?.cancel()
         reset(cancelRecorder = true)
     }
 
-    /**
-     * Gives a Bluetooth headset back to its music mode. Held back a moment: what has just
-     * been played is still on its way to the ears, and the switch would cut it off.
-     */
+    /** Release this turn's share after the closing cue has reached the ears. Wake listening keeps its own share. */
     override fun settle() {
-        if (!headsetActive) return
         settleJob?.cancel()
         settleJob = scope.launch {
             delay(ROUTE_HOLD_MS)
-            headsetMic.stop()
-            headsetActive = false
+            headsetMic.release(TURN)
         }
     }
 

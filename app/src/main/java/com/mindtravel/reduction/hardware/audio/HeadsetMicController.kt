@@ -7,102 +7,137 @@ import android.media.AudioManager
 import android.os.Build
 import com.mindtravel.reduction.core.Logs
 
-/**
- * Switches recording to a Bluetooth headset's microphone. The headset has to open its
- * call link for that, which takes a moment: [start] returns only once the link is really
- * up, so that what is recorded afterwards comes from the headset and not from the phone.
- */
-class HeadsetMicController(private val context: Context) {
+/** One system communication route, shared by wake listening, hands-free turns and push-to-talk. */
+class HeadsetMicController internal constructor(private val route: HeadsetRoute) {
+    constructor(context: Context) : this(AndroidHeadsetRoute(context))
 
-    private val audioManager = context.getSystemService(AudioManager::class.java)
+    enum class User { WAKE, TURN, PUSH_TO_TALK }
 
-    @Volatile
-    private var active = false
+    private val users = mutableSetOf<User>()
+    private var device: Int? = null
 
-    fun hasBluetoothHeadset(): Boolean {
-        val manager = audioManager ?: return false
-        val inputs = manager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-        if (inputs.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }) return true
-        val outputs = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        return outputs.any {
-            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+    /** Forget a removed endpoint even if a recording still holds its share of the old route. */
+    @Synchronized
+    fun refreshDevice(): Int? {
+        val available = route.availableDevice()
+        if (device != null && device != available) {
+            route.clear()
+            device = null
         }
+        return available
     }
 
-    fun start(): Boolean {
-        val manager = audioManager ?: return false
-        if (!hasBluetoothHeadset()) {
-            Logs.add("Headset mic unavailable: no Bluetooth SCO input")
+    @Synchronized
+    fun request(user: User, target: Int? = refreshDevice()): Boolean {
+        if (target == null) {
+            release(user)
             return false
         }
-        return try {
-            var routed = false
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val device = manager.availableCommunicationDevices.firstOrNull {
-                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
-                }
-                routed = device != null && manager.setCommunicationDevice(device)
+        if (device != target) {
+            if (device != null) route.clear()
+            device = null
+            if (!route.select(target)) return false
+            device = target
+        }
+        users.add(user)
+        return true
+    }
+
+    @Synchronized
+    fun ready(user: User): Boolean = user in users && device?.let(route::selected) == true
+
+    /** Called on the recording worker when opening a cold route. A held, ready route returns immediately. */
+    fun awaitReady(user: User): Boolean {
+        if (ready(user)) return true
+        val start = System.nanoTime()
+        while (synchronized(this) { user in users } && (System.nanoTime() - start) / 1_000_000 < LINK_LIMIT_MS) {
+            Thread.sleep(50)
+            if (ready(user)) {
+                Logs.add("Headset mic ready for $user after ${(System.nanoTime() - start) / 1_000_000}ms")
+                return true
             }
-            if (!routed) {
-                @Suppress("DEPRECATION")
-                manager.startBluetoothSco()
-                @Suppress("DEPRECATION")
-                manager.isBluetoothScoOn = true
-            }
-            manager.mode = AudioManager.MODE_IN_COMMUNICATION
-            active = true
-            val startedAt = System.currentTimeMillis()
-            var linked = linkIsUp()
-            while (!linked && System.currentTimeMillis() - startedAt < LINK_LIMIT_MS) {
-                Thread.sleep(LINK_POLL_MS)
-                linked = linkIsUp()
-            }
-            val waited = System.currentTimeMillis() - startedAt
-            if (linked) {
-                Logs.add("Headset mic active, call link up after ${waited}ms")
-            } else {
-                // Without the link the phone's own microphone would be recorded instead: say so, and use it openly.
-                Logs.add("Headset mic: call link did not come up in ${waited}ms, using the phone's microphone")
-                stop()
-            }
-            linked
-        } catch (t: Throwable) {
-            Logs.add("Headset mic failed: ${t.message}")
-            false
+        }
+        return false
+    }
+
+    @Synchronized
+    fun release(user: User) {
+        if (users.remove(user) && users.isEmpty() && device != null) {
+            route.clear()
+            device = null
         }
     }
 
-    /** Whether the headset's call link is carrying audio, as the system last announced it. */
-    private fun linkIsUp(): Boolean {
-        @Suppress("DEPRECATION")
-        val sticky = context.registerReceiver(null, IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED))
-        return sticky?.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1) == AudioManager.SCO_AUDIO_STATE_CONNECTED
+    internal companion object {
+        const val LINK_LIMIT_MS = 2_500L
+    }
+}
+
+internal interface HeadsetRoute {
+    fun availableDevice(): Int?
+    fun select(id: Int): Boolean
+    fun selected(id: Int): Boolean
+    fun clear()
+}
+
+private class AndroidHeadsetRoute(private val context: Context) : HeadsetRoute {
+    private val manager = context.getSystemService(AudioManager::class.java)
+
+    override fun availableDevice(): Int? = runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val headsets = manager.availableCommunicationDevices.filter {
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+            }
+            val current = manager.communicationDevice?.id
+            (headsets.firstOrNull { it.id == current } ?: headsets.firstOrNull())?.id
+        } else {
+            val devices = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS) + manager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            // Legacy SCO selects the Bluetooth headset implicitly. Its media and call ports have different IDs.
+            if (devices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }) 0 else null
+        }
+    }.getOrNull()
+
+    @Suppress("DEPRECATION")
+    override fun select(id: Int): Boolean = try {
+        manager.mode = AudioManager.MODE_IN_COMMUNICATION
+        val accepted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            manager.availableCommunicationDevices.firstOrNull { it.id == id }?.let(manager::setCommunicationDevice) == true
+        } else {
+            manager.startBluetoothSco()
+            manager.isBluetoothScoOn = true
+            true
+        }
+        if (!accepted) clear()
+        accepted
+    } catch (e: RuntimeException) {
+        Logs.add("Headset mic route failed: ${e.message}")
+        clear()
+        false
     }
 
-    fun stop() {
-        if (!active) return
-        val manager = audioManager ?: return
+    @Suppress("DEPRECATION")
+    override fun selected(id: Int): Boolean = runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            manager.communicationDevice?.id == id
+        } else {
+            val state = context.registerReceiver(null, IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED))
+            state?.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1) == AudioManager.SCO_AUDIO_STATE_CONNECTED
+        }
+    }.getOrDefault(false)
+
+    @Suppress("DEPRECATION")
+    override fun clear() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 manager.clearCommunicationDevice()
             } else {
-                @Suppress("DEPRECATION")
                 manager.stopBluetoothSco()
-                @Suppress("DEPRECATION")
                 manager.isBluetoothScoOn = false
             }
-            manager.mode = AudioManager.MODE_NORMAL
-        } catch (t: Throwable) {
-            Logs.add("Headset mic stop failed: ${t.message}")
+        } catch (e: RuntimeException) {
+            Logs.add("Headset mic route release failed: ${e.message}")
         } finally {
-            active = false
-            Logs.add("Headset mic stopped")
+            runCatching { manager.mode = AudioManager.MODE_NORMAL }
         }
-    }
-
-    private companion object {
-        const val LINK_LIMIT_MS = 2_500L
-        const val LINK_POLL_MS = 50L
     }
 }

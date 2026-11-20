@@ -123,6 +123,7 @@ class MainActivity : AppCompatActivity(), PermissionHost, UpdateHost, ToolApprov
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             bluetoothCallback?.invoke(granted)
             bluetoothCallback = null
+            if (granted && settingsRepository.load().wakeWordEnabled) WakeWordService.start(this)
         }
 
     @SuppressLint("SetJavaScriptEnabled")

@@ -90,7 +90,7 @@ class AppCore private constructor(context: Context) {
     private val historyRepository = HistoryRepository(File(context.filesDir, "chat_history.json"))
 
     // ── hardware ────────────────────────────────────────────────────────────
-    private val headsetMic = HeadsetMicController(context)
+    internal val headsetMic = HeadsetMicController(context)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioQueue = AudioQueue(AudioTrackSink()) { callback -> mainHandler.post(callback) }
     private val pcmPlayer = PcmPlayer(context, audioQueue, scope)

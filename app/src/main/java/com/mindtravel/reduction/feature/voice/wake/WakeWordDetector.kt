@@ -33,9 +33,14 @@ class WakeWordDetector(
 
     @Volatile
     private var detected = false
+    private var headsetInput = false
 
-    fun start() {
-        if (capture.isRunning()) return
+    fun start(useHeadsetMic: Boolean) {
+        if (capture.isRunning()) {
+            if (headsetInput == useHeadsetMic) return
+            stop()
+        }
+        headsetInput = useHeadsetMic
         detected = false
         recent.clear()
         try {
@@ -48,10 +53,10 @@ class WakeWordDetector(
         onListening()
         deafWatch.reset()
         pausedPhrase.reset()
-        Logs.add("Wake word listening started")
+        Logs.add("Wake word listening started headsetMic=$useHeadsetMic")
 
         val started = capture.start(
-            source = MediaRecorder.AudioSource.MIC,
+            source = if (useHeadsetMic) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC,
             onFrame = { frame ->
                 if (deafWatch.onFrame(frame)) {
                     Logs.add(if (deafWatch.deaf) "Wake word: microphone is delivering silence" else "Wake word: microphone is back")

@@ -5,6 +5,7 @@ import com.mindtravel.reduction.core.audio.AudioGateway
 import com.mindtravel.reduction.core.events.EventSink
 import com.mindtravel.reduction.core.settings.SettingsGateway
 import com.mindtravel.reduction.hardware.audio.HeadsetMicController
+import com.mindtravel.reduction.hardware.audio.HeadsetMicController.User.PUSH_TO_TALK
 import com.mindtravel.reduction.hardware.audio.WavRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,13 +37,14 @@ class PushToTalkSession(
             return
         }
 
-        val useHeadset = settings.headsetMicEnabled && headsetMic.start()
+        val useHeadset = settings.headsetMicEnabled && headsetMic.request(PUSH_TO_TALK) && headsetMic.awaitReady(PUSH_TO_TALK)
+        if (!useHeadset) headsetMic.release(PUSH_TO_TALK)
         val started = wavRecorder.start(useCommunicationSource = useHeadset) {
             emitter.emit("onRecordingLimit", id)
             scope.launch { finish(id) }
         }
         if (!started) {
-            headsetMic.stop()
+            headsetMic.release(PUSH_TO_TALK)
             emitter.emit("onError", id, "无法启动录音")
             return
         }
@@ -57,13 +59,13 @@ class PushToTalkSession(
 
     fun cancel() {
         wavRecorder.cancel()
-        headsetMic.stop()
+        headsetMic.release(PUSH_TO_TALK)
         finishing.set(false)
     }
 
     fun cancelActive() {
         wavRecorder.cancel()
-        headsetMic.stop()
+        headsetMic.release(PUSH_TO_TALK)
     }
 
     fun dispose() = cancel()
@@ -81,7 +83,7 @@ class PushToTalkSession(
             Logs.add("ASR failed: ${t.message}")
             emitter.emit("onAsrResult", id, false, t.message ?: "识别失败")
         } finally {
-            headsetMic.stop()
+            headsetMic.release(PUSH_TO_TALK)
             finishing.set(false)
         }
     }
