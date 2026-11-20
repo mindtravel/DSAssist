@@ -74,11 +74,13 @@ export function openSettings() {
   if (typeof raw === 'string' && raw) {
     try {
       const info = JSON.parse(raw);
+      if (info.android && info.ttsEngine) ui.els.voiceSelect.closest('label').classList.add('hidden');
       ui.setAppInfo(
         `版本 ${info.version} · Android ${info.android} (API ${info.sdk})\n` +
         `设备 ${info.device}\n` +
         `Key：${info.hasKey ? '已设置' : '未设置'}\n` +
         `电脑：${info.pcUser || ''}@${info.pcHost || '未设置'}:${info.pcPort || 22}\n` +
+        (info.ttsEngine ? `朗读引擎：${info.ttsEngine}\n` : '') +
         `音频缓存：${Number(info.cacheMb || 0).toFixed(1)} MB`
       );
     } catch (error) {

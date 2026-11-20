@@ -1,11 +1,9 @@
 package com.mindtravel.reduction.model.voice
 
 import com.mindtravel.reduction.core.ApiException
-import com.mindtravel.reduction.core.Logs
 import com.mindtravel.reduction.core.stringOrNull
 import com.mindtravel.reduction.core.audio.AudioGateway
 import com.mindtravel.reduction.model.DeepSeekHttp
-import org.json.JSONObject
 
 class DeepSeekAudioApi(private val http: DeepSeekHttp) : AudioGateway {
 
@@ -20,19 +18,5 @@ class DeepSeekAudioApi(private val http: DeepSeekHttp) : AudioGateway {
         )
         return response.stringOrNull("text")?.trim()?.takeIf { it.isNotBlank() }
             ?: throw ApiException("没有识别到文字")
-    }
-
-    override fun synthesize(apiKey: String, text: String, voice: String): ByteArray {
-        if (text.isBlank()) throw ApiException("没有可朗读的文本")
-        val body = JSONObject().apply {
-            put("text", text)
-            put("voice_id", if (voice == "tide") "tide" else "stella")
-            put("format", "pcm")
-            put("filter_markdown", true)
-        }
-        Logs.add("TTS request chars=${text.length} voice=$voice")
-        val bytes = http.postBytes("/v1/tools/tts", apiKey, body)
-        Logs.add("TTS response bytes=${bytes.size}")
-        return bytes
     }
 }

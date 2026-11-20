@@ -38,6 +38,9 @@ CHINESE_KEYWORDS='w án b ì @完毕'
 # Speech or noise: Silero VAD v4.
 VAD_URL=$RELEASES/asr-models/silero_vad_v4.onnx
 VAD_SHA=a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28
+# AISHELL-3 low VITS, Mandarin, from icefall. Only the small text-normalisation FSTs are used.
+TTS_NAME=vits-icefall-zh-aishell3
+TTS_SHA=ab468db3a3308cdd861495e0db2f25d79418a0c00639f74944c7cdf5dd8c6ec1
 # ── end of configuration ─────────────────────────────────────────────────────────────────────────────
 
 check_only=false
@@ -78,6 +81,16 @@ place_keywords() {                          # cache name, directory inside it, d
   printf '%s\n' "$4" > "$dest/keywords.txt"
   echo "placed  $3"
 }
+
+place_tts() {
+  local dest=$1
+  obtain "$RELEASES/tts-models/$TTS_NAME.tar.bz2" "$TTS_NAME.tar.bz2" "$TTS_SHA" || return 1
+  mkdir -p "$dest"
+  tar -xjf "$CACHE/$TTS_NAME.tar.bz2" -C "$dest" --strip-components=1 \
+    "$TTS_NAME"/{model.onnx,lexicon.txt,tokens.txt,phone.fst,date.fst,number.fst}
+}
+
+place_tts "$ROOT/app/src/main/assets/tts-aishell3" || missing=1
 
 obtain "$LIBRARY_URL" sherpa-onnx-2.0.1.aar "$LIBRARY_SHA" &&
   { mkdir -p "$ROOT/app/libs"; cp -f "$CACHE/sherpa-onnx-2.0.1.aar" "$ROOT/app/libs/sherpa-onnx-arm64.aar"; } &&

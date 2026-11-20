@@ -7,7 +7,7 @@ import com.mindtravel.reduction.model.chat.DeepSeekSearchApi
 import com.mindtravel.reduction.model.chat.SearchGateway
 import com.mindtravel.reduction.model.voice.DeepSeekAudioApi
 
-/** The remote models: chat, search, speech recognition and synthesis. */
+/** The remote models: chat, search and speech recognition. */
 class ModelGraph(private val http: DeepSeekHttp = DeepSeekHttp()) {
 
     val chatGateway: ChatGateway = DeepSeekChatGateway(http)

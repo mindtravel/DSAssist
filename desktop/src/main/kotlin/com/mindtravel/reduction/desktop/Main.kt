@@ -23,7 +23,6 @@ import com.mindtravel.reduction.feature.voice.Cue
 import com.mindtravel.reduction.feature.voice.EndWords
 import com.mindtravel.reduction.feature.voice.ReplyStreamer
 import com.mindtravel.reduction.feature.voice.SpeechController
-import com.mindtravel.reduction.feature.voice.SpokenCues
 import com.mindtravel.reduction.hardware.audio.SpeechOutput
 import com.mindtravel.reduction.hardware.audio.WavPcm
 import com.mindtravel.reduction.hardware.pc.PcGateway
@@ -36,7 +35,6 @@ import com.mindtravel.reduction.model.chat.ChatRequest
 import com.mindtravel.reduction.model.chat.ChatStreamEvent
 import com.mindtravel.reduction.model.chat.Role
 import com.mindtravel.reduction.model.voice.TtsCache
-import com.mindtravel.reduction.model.voice.TtsSynthesizer
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.CoroutineScope
@@ -256,9 +254,10 @@ class Desktop(data: File, val settingsFile: File) : ToolApprovalHost {
     /** To-dos, kept as the phone keeps them; a computer has no alarms, so the review card is the reminder. */
     private val memos = MemoStore(File(data, "memos.json"))
     /** REDUCTION_API_BASE points the models somewhere else, which is how this is tested without spending anything. */
-    private val models = ModelGraph(System.getenv("REDUCTION_API_BASE")?.takeIf { it.isNotBlank() }?.let { DeepSeekHttp(baseUrl = it) } ?: DeepSeekHttp())
+    private val http = System.getenv("REDUCTION_API_BASE")?.takeIf { it.isNotBlank() }?.let { DeepSeekHttp(baseUrl = it) } ?: DeepSeekHttp()
+    private val models = ModelGraph(http)
     private val ttsCache = TtsCache(File(data, "tts_cache"))
-    private val synthesizer = TtsSynthesizer(models.audioGateway, ttsCache)
+    private val synthesizer = DesktopTts(http, ttsCache)
     private val onMain: (() -> Unit) -> Unit = { block -> scope.launch { block() } }
 
     /** The machine's own loudspeakers and microphone; null when they cannot be reached, and the page stands in. */
@@ -266,7 +265,14 @@ class Desktop(data: File, val settingsFile: File) : ToolApprovalHost {
     val usesSystemAudio: Boolean get() = audio != null
     private val pageSpeech = PageSpeech(page, onMain)
     private val speech = SpeechController(
-        settings, ReplyStreamer(synthesizer, audio?.Speech(onMain) ?: pageSpeech, scope), ttsCache, page
+        settings,
+        ReplyStreamer(
+            openVoice = { voice -> synthesizer.openVoice(settings.load().apiKey, voice) },
+            player = audio?.Speech(onMain) ?: pageSpeech,
+            scope = scope
+        ),
+        ttsCache,
+        page
     )
     private val cues = SpokenCues(
         settingsRepository = settings,

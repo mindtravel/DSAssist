@@ -1,0 +1,5 @@
+Mandarin voice model: icefall-tts-aishell3-vits-low-2024-04-06, published by k2-fsa.
+https://huggingface.co/csukuangfj/icefall-tts-aishell3-vits-low-2024-04-06
+Packaged by sherpa-onnx: https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models
+Training corpus: AISHELL-3, Beijing Shell Shell Technology Co., Ltd. (https://www.openslr.org/93)
+The model and corpus are licensed under Apache License 2.0. See AISHELL3-Apache-2.0.txt.

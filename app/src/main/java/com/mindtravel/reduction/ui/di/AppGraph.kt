@@ -49,7 +49,7 @@ class AppGraph(
         cards = CardBridge(core.cardRepository, core.cardOverlay, { activity.askToAllowOverlay() }, core.articles),
         pc = PcBridge(core.pc),
         update = UpdateBridge(updateController),
-        system = SystemBridge(activity, core.settingsRepository, voiceBridge),
+        system = SystemBridge(activity, core.settingsRepository, voiceBridge) { core.tts.description },
         memos = core.memoStore,
         alarms = MemoAlarms(activity)
     )

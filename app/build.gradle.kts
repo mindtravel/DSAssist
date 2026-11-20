@@ -86,6 +86,16 @@ android {
     }
 }
 
+val prepareSpeechAssets by tasks.registering(Exec::class) {
+    val script = rootProject.file("tools/models/fetch-models.sh")
+    inputs.file(script)
+    outputs.file("libs/sherpa-onnx-arm64.aar")
+    outputs.dirs("src/main/assets/kws", "src/main/assets/kws-en", "src/main/assets/vad", "src/main/assets/tts-aishell3")
+    commandLine("bash", script)
+}
+
+tasks.named("preBuild") { dependsOn(prepareSpeechAssets) }
+
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
@@ -95,7 +105,7 @@ dependencies {
     implementation("com.github.mwiede:jsch:2.28.8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.apache.commons:commons-compress:1.27.1")
-    implementation(files("libs/sherpa-onnx-arm64.aar"))
+    implementation(files("libs/sherpa-onnx-arm64.aar").builtBy(prepareSpeechAssets))
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

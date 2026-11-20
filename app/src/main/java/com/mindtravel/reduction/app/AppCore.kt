@@ -31,7 +31,6 @@ import com.mindtravel.reduction.feature.voice.PushToTalkSession
 import com.mindtravel.reduction.feature.voice.RecordingController
 import com.mindtravel.reduction.feature.voice.ReplyStreamer
 import com.mindtravel.reduction.feature.voice.SpeechController
-import com.mindtravel.reduction.feature.voice.SpokenCues
 import com.mindtravel.reduction.feature.voice.TurnListener
 import com.mindtravel.reduction.feature.voice.TurnRecorder
 import com.mindtravel.reduction.feature.voice.VoiceRuntime
@@ -43,6 +42,7 @@ import com.mindtravel.reduction.hardware.audio.AudioQueue
 import com.mindtravel.reduction.hardware.audio.AudioRoutes
 import com.mindtravel.reduction.hardware.audio.AudioTrackSink
 import com.mindtravel.reduction.hardware.audio.HeadsetMicController
+import com.mindtravel.reduction.hardware.audio.Loudness
 import com.mindtravel.reduction.hardware.audio.MediaButtons
 import com.mindtravel.reduction.hardware.audio.PcmPlayer
 import com.mindtravel.reduction.hardware.audio.RecordingArchive
@@ -53,8 +53,8 @@ import com.mindtravel.reduction.hardware.power.DeviceBattery
 import com.mindtravel.reduction.hardware.pc.SshPcClient
 import com.mindtravel.reduction.model.ModelGraph
 import com.mindtravel.reduction.model.voice.RollingAsr
+import com.mindtravel.reduction.model.voice.AndroidTts
 import com.mindtravel.reduction.model.voice.TtsCache
-import com.mindtravel.reduction.model.voice.TtsSynthesizer
 import com.mindtravel.reduction.model.voice.VoiceDetector
 import com.mindtravel.reduction.model.wake.KeywordSpotterModel
 import com.mindtravel.reduction.ui.overlay.CardOverlay
@@ -101,26 +101,20 @@ class AppCore private constructor(context: Context) {
     // ── models ──────────────────────────────────────────────────────────────
     private val models = ModelGraph()
     private val ttsCache = TtsCache(File(context.cacheDir, "tts_cache"))
-    private val ttsSynthesizer = TtsSynthesizer(models.audioGateway, ttsCache)
+    internal val tts = AndroidTts(context, ttsCache)
 
     // ── features: voice ─────────────────────────────────────────────────────
-    private val spokenCues = SpokenCues(
-        settingsRepository = settingsRepository,
-        synthesizer = ttsSynthesizer,
-        bundled = mapOf(
-            Cue.OK to cueSound(context, R.raw.ack_done),
-            Cue.RETRYING to cueSound(context, R.raw.cue_retrying),
-            Cue.NO_NETWORK to cueSound(context, R.raw.cue_no_network),
-            Cue.FAILED to cueSound(context, R.raw.cue_failed),
-            Cue.NOT_HEARD to cueSound(context, R.raw.cue_not_heard)
-        ),
-        sampleRate = AudioQueue.SAMPLE_RATE,
-        scope = scope
-    )
+    private val cueSounds = mapOf(
+        Cue.OK to cueSound(context, R.raw.ack_done),
+        Cue.RETRYING to cueSound(context, R.raw.cue_retrying),
+        Cue.NO_NETWORK to cueSound(context, R.raw.cue_no_network),
+        Cue.FAILED to cueSound(context, R.raw.cue_failed),
+        Cue.NOT_HEARD to cueSound(context, R.raw.cue_not_heard)
+    ).mapValues { Loudness.leveled(it.value) }
     private val ackCue = AckCue(
         queue = audioQueue,
         sounds = AckCue.Sounds(
-            spoken = spokenCues::sound,
+            spoken = cueSounds::getValue,
             hum = sound(context, R.raw.ack_hum, channels = 2),
             humStereo = true,
             // 4 dB above the recording: the same 24 dB under full scale instead of 20.
@@ -129,7 +123,7 @@ class AppCore private constructor(context: Context) {
         scope = scope,
         describeOutput = { AudioRoutes.describe(context) }
     )
-    val speech = SpeechController(settingsRepository, ReplyStreamer(ttsSynthesizer, pcmPlayer, scope), ttsCache, ui)
+    val speech = SpeechController(settingsRepository, ReplyStreamer(tts::openVoice, pcmPlayer, scope), ttsCache, ui)
     private val pushToTalk = PushToTalkSession(
         settingsRepository = settingsRepository,
         audioGateway = models.audioGateway,
@@ -290,7 +284,6 @@ class AppCore private constructor(context: Context) {
         agentWatch.start()
         phoneSync.start()
         WakeWordBus.clipSink = { wav, keyword -> recordings.keep("wake", wav, keyword) }
-        spokenCues.prepare()
         Logs.add("Core started")
     }
 

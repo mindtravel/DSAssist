@@ -24,4 +24,5 @@ app/libs/
 app/src/main/assets/kws/
 app/src/main/assets/kws-en/
 app/src/main/assets/vad/
+app/src/main/assets/tts-aishell3/
 .models/

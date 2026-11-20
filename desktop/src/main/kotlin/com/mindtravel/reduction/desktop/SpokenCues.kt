@@ -1,30 +1,13 @@
-package com.mindtravel.reduction.feature.voice
+package com.mindtravel.reduction.desktop
 
 import com.mindtravel.reduction.core.Logs
 import com.mindtravel.reduction.core.settings.SettingsGateway
+import com.mindtravel.reduction.feature.voice.Cue
 import com.mindtravel.reduction.hardware.audio.Loudness
-import com.mindtravel.reduction.model.voice.TtsSynthesizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
-
-/** The short things the assistant says by itself, without the model: an acknowledgement, and why there is no answer. */
-enum class Cue(val text: String) {
-    OK("好的。"),
-
-    /** The request did not get through; it is being sent again. */
-    RETRYING("网络不太好，正在重试。"),
-
-    /** The request did not get through at all. */
-    NO_NETWORK("网络不通，没能回答，请稍后再说一遍。"),
-
-    /** The answer failed for another reason. */
-    FAILED("出错了，没能回答。"),
-
-    /** Nothing intelligible was recorded. */
-    NOT_HEARD("没听清，请再说一遍。")
-}
 
 /**
  * The cues as sound, ready before they are needed — they are what is heard when the
@@ -32,9 +15,9 @@ enum class Cue(val text: String) {
  * the background, and kept; until then, and whenever that is impossible, the recording
  * bundled with the app is played. All are as loud as the speech around them.
  */
-class SpokenCues(
+internal class SpokenCues(
     private val settingsRepository: SettingsGateway,
-    private val synthesizer: TtsSynthesizer,
+    private val synthesizer: DesktopTts,
     bundled: Map<Cue, ByteArray>,
     private val sampleRate: Int,
     private val scope: CoroutineScope

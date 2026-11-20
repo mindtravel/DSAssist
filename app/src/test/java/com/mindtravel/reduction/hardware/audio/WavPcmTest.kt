@@ -46,6 +46,23 @@ class WavPcmTest {
     }
 
     @Test
+    fun decodesTheEightBitAndFloatFormatsAndroidSpeechEnginesCanProduce() {
+        val bytes = wav(22_050, shortArrayOf(0, 0))
+        val header = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        header.putShort(34, 8)
+        bytes[44] = 0
+        bytes[45] = 127
+        bytes[46] = 128.toByte()
+        bytes[47] = 255.toByte()
+        assertArrayEquals(byteArrayOf(0, -128, 0, -1, 0, 0, 0, 127), WavPcm.parse(bytes).data)
+
+        // Android's file synthesizer writes the PCM format tag even for a float engine.
+        header.putShort(34, 32)
+        header.putFloat(44, -0.5f)
+        assertArrayEquals(byteArrayOf(1, -64), WavPcm.parse(bytes, androidTts = true).data)
+    }
+
+    @Test
     fun theBundledCuesAreValid() {
         val raw = generateSequence(File("").absoluteFile) { it.parentFile }
             .map { File(it, "app/src/main/res/raw") }

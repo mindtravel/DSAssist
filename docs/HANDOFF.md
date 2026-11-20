@@ -13,7 +13,7 @@
 | 手机 | Android App，包名 `com.mindtravel.reduction` | 唤醒词“Hi Reduction”，说完说“完毕” |
 | 电脑 | Windows 桌面上的一只桌宠，加一张面板 | 按住空格说话；点桌宠开面板 |
 
-模型和语音都走 DeepSeek 的接口（对话、ASR、TTS、搜索）。唤醒词、结束词、有没有人在说话，这三样在手机本地判断（sherpa-onnx、Silero VAD）。
+对话、语音识别和搜索使用 DeepSeek。安卓朗读优先使用系统已安装的中文离线音色，系统朗读不可用时使用随包的普通话模型。电脑朗读使用 DeepSeek TTS。唤醒词、结束词、有没有人在说话，这三样在手机本地判断（sherpa-onnx、Silero VAD）。
 
 ## 二、最重要的一件事：一份引擎，两个壳
 

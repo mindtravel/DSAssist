@@ -38,8 +38,8 @@ class SpeechController(
             if (id != activeId) return
             if (!streaming) {
                 val settings = settingsRepository.load()
-                if (!settings.autoSpeak || settings.apiKey.isBlank()) return
-                begin(id, settings.apiKey, settings.voice)
+                if (!settings.autoSpeak) return
+                begin(id, settings.voice)
             }
             streamer.push(text)
         }
@@ -67,14 +67,10 @@ class SpeechController(
     fun speak(id: String, text: String) {
         stop(notify = false)
         val settings = settingsRepository.load()
-        if (settings.apiKey.isBlank()) {
-            emitter.emit("onTtsError", id, "请先在设置里填写 API Key")
-            return
-        }
         synchronized(lock) {
             activeId = id
             onEnd = null
-            begin(id, settings.apiKey, settings.voice)
+            begin(id, settings.voice)
             streamer.push(text)
             streamer.finish()
         }
@@ -102,10 +98,10 @@ class SpeechController(
 
     fun dispose() = stop(notify = false)
 
-    private fun begin(id: String, apiKey: String, voice: String) {
+    private fun begin(id: String, voice: String) {
         Logs.add("TTS stream start voice=$voice")
         streaming = true
-        streamer.start(apiKey, voice, object : ReplyStreamer.Events {
+        streamer.start(voice, object : ReplyStreamer.Events {
             override fun onStart() {
                 if (isActive(id)) emitter.emit("onTtsStart", id)
             }

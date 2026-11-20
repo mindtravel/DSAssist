@@ -18,7 +18,7 @@ sourceSets {
             include("com/mindtravel/reduction/model/ModelGraph.kt")
             include("com/mindtravel/reduction/model/chat/**")
             include("com/mindtravel/reduction/model/voice/DeepSeekAudioApi.kt")
-            include("com/mindtravel/reduction/model/voice/TtsSynthesizer.kt")
+            include("com/mindtravel/reduction/model/voice/SpeechVoice.kt")
             include("com/mindtravel/reduction/model/voice/TtsCache.kt")
             include("com/mindtravel/reduction/feature/chat/**")
             include("com/mindtravel/reduction/feature/sync/DataSync.kt")
@@ -31,7 +31,7 @@ sourceSets {
             include("com/mindtravel/reduction/feature/voice/SentenceSplitter.kt")
             include("com/mindtravel/reduction/feature/voice/SpeechTextExtractor.kt")
             include("com/mindtravel/reduction/feature/voice/SpeechController.kt")
-            include("com/mindtravel/reduction/feature/voice/SpokenCues.kt")
+            include("com/mindtravel/reduction/feature/voice/Cue.kt")
             include("com/mindtravel/reduction/feature/voice/EndWords.kt")
             include("com/mindtravel/reduction/hardware/audio/Loudness.kt")
             include("com/mindtravel/reduction/hardware/audio/SpeechOutput.kt")
@@ -44,7 +44,7 @@ sourceSets {
             // The page, the scripts that run sub agents, and the bundled cue recordings, as the phone has them.
             srcDir("../app/src/main/assets")
             srcDir("../app/src/main/res/raw")
-            exclude("kws/**", "kws-en/**", "vad/**")
+            exclude("kws/**", "kws-en/**", "vad/**", "tts-aishell3/**")
         }
     }
 }

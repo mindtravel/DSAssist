@@ -17,7 +17,8 @@ import org.json.JSONObject
 class SystemBridge(
     private val activity: MainActivity,
     private val settings: SettingsRepository,
-    private val voice: VoiceBridge
+    private val voice: VoiceBridge,
+    private val ttsEngine: () -> String
 ) {
     fun vibrate(ms: Int) {
         activity.runOnUiThread {
@@ -66,6 +67,7 @@ class SystemBridge(
             put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
             put("model", current.model)
             put("voice", current.voice)
+            put("ttsEngine", ttsEngine())
             put("hasKey", current.apiKey.isNotBlank())
             put("pcHost", current.pcHost)
             put("pcPort", current.pcPort)
@@ -81,7 +83,7 @@ class SystemBridge(
             appendLine("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Model: ${current.model}")
-            appendLine("Voice: ${current.voice}")
+            appendLine("TTS: ${ttsEngine()}")
             appendLine("Key set: ${current.apiKey.isNotBlank()}")
             appendLine("PC SSH: ${current.pcUser}@${current.pcHost}:${current.pcPort}")
             appendLine("TTS cache: %.1f MB".format(voice.cacheSizeMb()))
