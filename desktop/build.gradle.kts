@@ -43,6 +43,7 @@ sourceSets {
         resources {
             // The page, the scripts that run sub agents, and the bundled cue recordings, as the phone has them.
             srcDir("../app/src/main/assets")
+            srcDir("../app/src/main/resources")
             srcDir("../app/src/main/res/raw")
             exclude("kws/**", "kws-en/**", "vad/**")
         }

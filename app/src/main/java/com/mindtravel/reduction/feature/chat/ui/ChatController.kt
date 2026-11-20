@@ -2,21 +2,24 @@ package com.mindtravel.reduction.feature.chat.ui
 
 import com.mindtravel.reduction.core.ApiException
 import com.mindtravel.reduction.core.Logs
+import com.mindtravel.reduction.core.NetworkException
 import com.mindtravel.reduction.core.events.EventSink
+import com.mindtravel.reduction.core.settings.AppSettings
 import com.mindtravel.reduction.core.settings.SettingsGateway
 import com.mindtravel.reduction.feature.chat.model.ChatCallbacks
 import com.mindtravel.reduction.feature.chat.model.ChatEngine
 import com.mindtravel.reduction.feature.chat.model.ChatSession
+import com.mindtravel.reduction.feature.chat.model.ContextBudget
 import com.mindtravel.reduction.feature.chat.model.tools.ChatToolFactory
-import com.mindtravel.reduction.core.NetworkException
 import com.mindtravel.reduction.feature.voice.Cue
 import com.mindtravel.reduction.feature.voice.SpeechController
-import com.mindtravel.reduction.model.chat.ChatMessage
 import com.mindtravel.reduction.model.chat.ChatRequest
-import com.mindtravel.reduction.model.chat.Role
+import com.mindtravel.reduction.model.chat.ToolSpec
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 /** Told when a reply begins and when it is completely over (generated and spoken). */
@@ -52,33 +55,21 @@ class ChatController(
     private var current: Reply? = null
 
     /**
-     * Starts a reply to [messages]. [onCompleted] is given the finished text once, when the
+     * Starts a reply. [onCompleted] is given the finished text once, when the
      * reply has been generated in full.
      */
-    fun send(requestId: String, messages: List<ChatMessage>, onCompleted: (String) -> Unit = {}): Boolean {
-        val settings = settingsRepository.load()
-        if (settings.apiKey.isBlank()) {
-            emitter.emit("onChatError", requestId, "请先在设置里填写 API Key")
-            return false
-        }
-
-        val boundedMessages = if (messages.size <= MAX_MESSAGES) {
-            messages
-        } else {
-            val system = messages.firstOrNull { it.role == Role.SYSTEM }
-            listOfNotNull(system) + messages.filter { it.role != Role.SYSTEM }.takeLast(MAX_MESSAGES - 1)
-        }
-
+    internal fun send(
+        requestId: String,
+        settings: AppSettings,
+        prepare: (List<ToolSpec>, () -> Unit) -> ContextBudget.Choice,
+        onAccepted: (ContextBudget.Snapshot) -> Unit,
+        onCompleted: (String) -> Unit
+    ) {
         val registry = toolFactory.create(settings)
-        val request = ChatRequest(
-            apiKey = settings.apiKey,
-            model = settings.model,
-            messages = boundedMessages,
-            tools = registry.specs()
-        )
+        val tools = registry.specs()
+        val reply = Reply(requestId)
 
         cancel()
-        val reply = Reply(requestId)
         synchronized(lock) { current = reply }
         speech.open(requestId) {
             synchronized(lock) { reply.spoken = true }
@@ -86,12 +77,18 @@ class ChatController(
         }
         observer?.onReplyStarted(requestId)
 
-        Logs.add("chat request model=${settings.model} tools=${registry.specs().size}")
+        Logs.add("chat request model=${settings.model} tools=${tools.size}")
         emitter.emit("onStatus", requestId, "思考中")
 
         reply.job = scope.launch(Dispatchers.IO) {
             try {
-                chatEngine.run(request, registry, callbacksFor(reply, onCompleted))
+                val choice = prepare(tools) { ensureActive() }
+                ensureActive()
+                val request = ChatRequest(settings.apiKey, settings.model, choice.messages, tools)
+                chatEngine.run(request, registry, callbacksFor(reply, { onAccepted(choice.snapshot) }, onCompleted))
+            } catch (t: CancellationException) {
+                // A new message, a wake word or a stop: the old reply is no longer wanted.
+                Logs.add("chat cancelled")
             } catch (t: NetworkException) {
                 Logs.add("chat failed after ${ChatSession.ATTEMPTS} attempts: ${t.message}")
                 fail(reply, "试了 ${ChatSession.ATTEMPTS} 次都没连上：${t.message ?: "网络不通"}", Cue.NO_NETWORK)
@@ -102,7 +99,6 @@ class ChatController(
                 fail(reply, "请求失败：${t.message ?: "未知错误"}")
             }
         }
-        return true
     }
 
     /** A reply is being generated or spoken. */
@@ -122,7 +118,9 @@ class ChatController(
         emitter.emit("onChatAborted", reply.id)
     }
 
-    private fun callbacksFor(reply: Reply, onCompleted: (String) -> Unit) = object : ChatCallbacks {
+    private fun callbacksFor(reply: Reply, onAccepted: () -> Unit, onCompleted: (String) -> Unit) = object : ChatCallbacks {
+        override fun onInitialInputAccepted() { if (isCurrent(reply)) onAccepted() }
+
         override fun onToken(text: String) {
             if (!isCurrent(reply)) return
             emitter.emit("onChatToken", reply.id, text)
@@ -192,8 +190,6 @@ class ChatController(
     private fun isCurrent(reply: Reply): Boolean = synchronized(lock) { current === reply && !reply.closed }
 
     companion object {
-        private const val MAX_MESSAGES = 40
-
         /** How much of a tool result the tool card can show. */
         private const val TOOL_RESULT_SHOWN = 12_000
     }

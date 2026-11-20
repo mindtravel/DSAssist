@@ -16,5 +16,6 @@
 | JSch（mwiede 分支） | SSH | mwiede/jsch | BSD |
 | Apache Commons Compress | 解更新包 | apache/commons-compress | Apache-2.0 |
 | org.json、kotlinx.coroutines、AndroidX | 基础库 | 各自上游 | 见各自上游 |
+| DeepSeek V4 分词表（`deepseek/v4.bpe.gz`） | 手机和电脑在发送前计算文本 token。`tools/models/prepare-tokenizer.py` 从官方压缩包重建词表 | [DeepSeek 离线分词器](https://api-docs.deepseek.com/zh-cn/quick_start/token_usage/) | [MIT](../app/src/main/resources/deepseek/LICENSE.txt) |
 
 随包自带的提示音里，“好的”和几句失败提示是用开源中文语音模型（piper 的 huayan）合成的备用录音；乐音是程序生成的。

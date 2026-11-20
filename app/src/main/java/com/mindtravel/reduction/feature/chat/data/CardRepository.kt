@@ -69,15 +69,36 @@ class CardRepository(private val dir: File) {
         return save(clean, content, purpose, byProgram = true)
     }
 
+    private fun cardName(file: File): String? =
+        if (file.isFile && file.name.endsWith(TEXT)) decode(file.name.removeSuffix(TEXT)) else null
+
     @Synchronized
-    fun list(): List<Info> = (dir.listFiles() ?: emptyArray())
-        .filter { it.isFile && it.name.endsWith(TEXT) }
+    fun list(): List<Info> = dir.listFiles().orEmpty()
         .mapNotNull { file ->
-            val name = decode(file.name.removeSuffix(TEXT)) ?: return@mapNotNull null
+            val name = cardName(file) ?: return@mapNotNull null
             val text = runCatching { file.readText() }.getOrDefault("")
             Info(name, purposeOf(name), text.length, file.lastModified())
         }
         .sortedByDescending { it.updatedAt }
+
+    /** The model's directory depends only on card names, purposes and types. */
+    @Synchronized
+    fun promptDirectory(): List<String> {
+        val program = mutableListOf<String>()
+        val prompts = mutableListOf<String>()
+        val regular = mutableListOf<String>()
+        for (name in dir.listFiles().orEmpty().mapNotNull(::cardName).sorted()) {
+            val locked = isLocked(name)
+            val purpose = purposeOf(name).ifBlank { "（没有写用途）" }
+            val entry = "- $name：$purpose" + if (locked) "【用户已审核并锁定的 prompt】" else ""
+            when {
+                name in programCards -> program += entry
+                locked -> prompts += entry
+                else -> regular += entry
+            }
+        }
+        return program + prompts + regular
+    }
 
     @Synchronized
     fun read(name: String): String? =

@@ -23,6 +23,30 @@ class CardRepositoryTest {
     }
 
     @Test
+    fun promptDirectoryIsOrderedByTypeAndFullNameAcrossBodyWrites() {
+        val cards = cards()
+        cards.save("B/前言", "草稿")
+        cards.save("任务/Z", "已审", "任务")
+        cards.setLocked("任务/Z", true)
+        cards.writeProgramCard("计划", "旧待办", "待办")
+        cards.save("A/后记", "初稿", "笔记")
+        cards.save("任务/A", "已审", "任务")
+        cards.setLocked("任务/A", true)
+        cards.writeProgramCard("sub agent 任务", "旧记录", "任务进度")
+        val expected = listOf(
+            "- sub agent 任务：任务进度", "- 计划：待办",
+            "- 任务/A：任务【用户已审核并锁定的 prompt】", "- 任务/Z：任务【用户已审核并锁定的 prompt】",
+            "- A/后记：笔记", "- B/前言：（没有写用途）"
+        )
+        assertEquals(expected, cards.promptDirectory())
+
+        cards.writeProgramCard("sub agent 任务", "任务已完成，已交回报告", "任务进度")
+        cards.writeProgramCard("计划", "新的待办和时间", "待办")
+        assertEquals("saved", cards.autosave("B/前言", "", "自动保存后的长正文", false, "", "草稿"))
+        assertEquals(expected, cards.promptDirectory())
+    }
+
+    @Test
     fun savingReplacesTheWholeCardAndCanChangeItsPurpose() {
         val cards = cards()
         cards.save("任务", "旧", purpose = "当前任务卡")

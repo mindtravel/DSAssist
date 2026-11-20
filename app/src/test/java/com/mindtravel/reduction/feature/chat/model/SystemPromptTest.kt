@@ -18,7 +18,7 @@ class SystemPromptTest {
     private fun built(): Map<String, String> = mapOf(
         "all" to SystemPrompt.build(
             settings(true, true, true, true, "/home/u/p"), "2026-01-02",
-            listOf("- 备忘：零碎待办（12 字）", "- 想法：（没有写用途）（3 字）")
+            listOf("- 备忘：零碎待办", "- 想法：（没有写用途）")
         ),
         "readonly" to SystemPrompt.build(settings(false, true, true, false, "/home/u/p"), "2026-01-02", emptyList()),
         "bare" to SystemPrompt.build(settings(false, false, false, false, "/x"), "2026-01-02", emptyList())

@@ -11,8 +11,8 @@ import com.mindtravel.reduction.feature.chat.model.tools.AgentLedger
  */
 object SystemPrompt {
 
-    /** [cardDirectory] has one line per memo card: its name, purpose and size, never its text. */
     /**
+     * [cardDirectory] lists card names, purposes and prompt lock markers in a stable order.
      * [deviceNotices] are facts about the user's devices that have just become worth mentioning;
      * the assistant is asked to say them once, after its answer.
      */

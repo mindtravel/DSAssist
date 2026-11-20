@@ -5,9 +5,10 @@ import com.mindtravel.reduction.core.events.EventSink
 import com.mindtravel.reduction.core.settings.SettingsGateway
 import com.mindtravel.reduction.feature.chat.data.CardRepository
 import com.mindtravel.reduction.feature.chat.data.HistoryRepository
+import com.mindtravel.reduction.feature.chat.model.ContextBudget
+import com.mindtravel.reduction.feature.chat.model.ContextLine
 import com.mindtravel.reduction.feature.chat.model.SystemPrompt
 import com.mindtravel.reduction.model.chat.ChatImage
-import com.mindtravel.reduction.model.chat.ChatMessage
 import com.mindtravel.reduction.model.chat.Role
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,17 +35,10 @@ class Conversation(
     /** Where the assistant is running, as it should describe itself. */
     private val place: String = "安卓手机"
 ) {
-    /** A line carries a name of its own and the time it was said: that is what lets two devices share one conversation. */
-    private class Line(
-        val id: String, val role: Role, val content: String, val at: Long,
-        /**
-         * Pictures that came with this line. Held while the app runs, so that the next
-         * few replies can still look at them; the record on disk keeps the words only.
-         */
-        val images: List<ChatImage> = emptyList()
-    )
-
-    private val lines = ArrayList<Line>()
+    private val lines = ArrayList<ContextLine>()
+    private val budget = ContextBudget()
+    private var previous = history.checkpoint.load(history.clearedAt)
+    private var generation = 0L
 
     /** Told whenever something was said here, by the user or the assistant, or the conversation was cleared. */
     @Volatile
@@ -67,9 +61,9 @@ class Conversation(
                 val id = item.optString("id")
                 if (id.isEmpty() || !item.has("at")) unnamed = true
                 // A line written before lines had names: named now, and dated in the order it stands in.
-                lines += Line(id.ifEmpty { UUID.randomUUID().toString() }, role, content, item.optLong("at", now - (saved.length() - i) * 1000L))
+                lines += ContextLine(id.ifEmpty { UUID.randomUUID().toString() }, role, content, item.optLong("at", now - (saved.length() - i) * 1000L))
             }
-            if (unnamed) history.save(historyJson())
+            if (unnamed) persist()
         }.onFailure { Logs.add("History unreadable: ${it.message}") }
     }
 
@@ -89,8 +83,7 @@ class Conversation(
 
     /**
      * As above, with pictures for the assistant to look at. They go to the model with the
-     * message, and again with the replies that follow while they are among the latest
-     * [PICTURES_IN_VIEW]; they are not written to the record.
+     * message, and again while they are among the recent pictures. The record on disk keeps the words.
      */
     @Synchronized
     fun submit(raw: String, shown: String, images: List<ChatImage>): Boolean {
@@ -102,39 +95,25 @@ class Conversation(
             return false
         }
 
-        lines += Line(UUID.randomUUID().toString(), Role.USER, text, System.currentTimeMillis(), images)
+        lines += ContextLine(UUID.randomUUID().toString(), Role.USER, text, System.currentTimeMillis(), images)
         save()
         val id = UUID.randomUUID().toString()
         emitter.emit("onReplyBegin", id, shown.trim().ifEmpty { text })
 
-        val directory = cards.list().map { card ->
-            "- ${card.name}：${card.purpose.ifBlank { "（没有写用途）" }}（${card.chars} 字）" +
-                if (cards.isLocked(card.name)) "【用户已审核并锁定的 prompt】" else ""
-        }
-        val messages = ArrayList<ChatMessage>()
-        messages += ChatMessage(
-            role = Role.SYSTEM,
-            content = SystemPrompt.build(
-                settings, today(), directory,
-                runCatching(deviceNotices).getOrDefault(emptyList()),
-                runCatching(todoNotices).getOrDefault(emptyList()),
-                place
-            )
+        val system = SystemPrompt.build(
+            settings, today(), cards.promptDirectory(),
+            runCatching(deviceNotices).getOrDefault(emptyList()),
+            runCatching(todoNotices).getOrDefault(emptyList()), place
         )
-        // The latest pictures stay in view; older ones have been spoken of and are let go.
-        val shown = lines.takeLast(CONTEXT_LINES)
-        var room = PICTURES_IN_VIEW
-        val withPictures = HashSet<String>()
-        for (line in shown.asReversed()) {
-            if (line.images.isEmpty() || line.images.size > room) continue
-            room -= line.images.size
-            withPictures += line.id
-        }
-        shown.mapTo(messages) { line ->
-            ChatMessage(role = line.role, content = line.content, images = if (line.id in withPictures) line.images else emptyList())
-        }
-
-        return chat.send(id, messages) { reply -> remember(reply) }
+        val turn = ++generation
+        val reference = previous
+        val entries = lines.toList()
+        chat.send(id, settings,
+            prepare = { tools, checkActive -> budget.choose(reference, system, entries, settings.model, settings.apiKey, tools, checkActive) },
+            onAccepted = { checkpoint -> accept(turn, checkpoint) },
+            onCompleted = { reply -> remember(turn, reply) }
+        )
+        return true
     }
 
     /**
@@ -162,10 +141,12 @@ class Conversation(
         return submit("$said\n$note", said, images)
     }
 
-    /** Everything said so far, as the JSON the UI draws from. */
+    /** The recent transcript used by the UI and device sync. The active model window may be longer. */
     @Synchronized
-    fun historyJson(): String = JSONArray().apply {
-        for (line in lines) {
+    fun historyJson(): String = encodeLines(lines.takeLast(KEPT_LINES))
+
+    private fun encodeLines(entries: List<ContextLine>): String = JSONArray().apply {
+        for (line in entries) {
             put(
                 JSONObject().put("role", if (line.role == Role.USER) "user" else "assistant").put("content", line.content)
                     .put("id", line.id).put("at", line.at)
@@ -175,6 +156,7 @@ class Conversation(
 
     @Synchronized
     fun clear() {
+        resetContext()
         lines.clear()
         history.clear()
         history.clearedAt = System.currentTimeMillis()
@@ -196,7 +178,10 @@ class Conversation(
     fun merge(remote: JSONObject): Boolean {
         val before = lines.map { it.id }
         val cleared = maxOf(history.clearedAt, remote.optLong("clearedAt"))
-        if (cleared > history.clearedAt) history.clearedAt = cleared
+        if (cleared > history.clearedAt) {
+            resetContext()
+            history.clearedAt = cleared
+        }
         lines.removeAll { it.at <= cleared }
         val known = lines.mapTo(HashSet()) { it.id }
         val theirs = remote.optJSONArray("lines") ?: JSONArray()
@@ -211,26 +196,59 @@ class Conversation(
             }
             val content = item.optString("content")
             if (id.isEmpty() || content.isBlank() || at <= cleared || !known.add(id)) continue
-            lines += Line(id, role, content, at)
+            lines += ContextLine(id, role, content, at)
         }
         lines.sortBy { it.at }
-        while (lines.size > KEPT_LINES) lines.removeAt(0)
+        trimHistory()
         if (lines.map { it.id } == before) return false
-        history.save(historyJson())
+        persist()
         emitter.emit("onHistoryChanged", "")
         return true
     }
 
     @Synchronized
-    private fun remember(reply: String) {
-        if (reply.isBlank()) return
-        lines += Line(UUID.randomUUID().toString(), Role.ASSISTANT, reply, System.currentTimeMillis())
+    private fun remember(turn: Long, reply: String) {
+        if (turn != generation || reply.isBlank()) return
+        lines += ContextLine(UUID.randomUUID().toString(), Role.ASSISTANT, reply, System.currentTimeMillis())
         save()
     }
 
+    @Synchronized
+    private fun accept(turn: Long, checkpoint: ContextBudget.Snapshot) {
+        if (turn != generation) return
+        previous = checkpoint
+        history.checkpoint.save(checkpoint, history.clearedAt)
+        if (trimHistory()) persist()
+    }
+
+    private fun resetContext() {
+        generation++
+        previous = null
+        history.checkpoint.clear()
+        chat.cancel()
+    }
+
+    /** Retain enough local history for both the last 100 visible messages and the active window. */
+    private fun trimHistory(): Boolean {
+        // A device merge can shift several pictures past the visible window at once.
+        for (i in 0 until lines.size - ContextBudget.RECENT) {
+            if (lines[i].images.isNotEmpty()) lines[i] = lines[i].copy(images = emptyList())
+        }
+        val excess = lines.size - KEPT_LINES
+        if (excess <= 0) return false
+        val anchor = previous?.firstId
+        val start = if (anchor == null) -1 else lines.indexOfFirst { it.id == anchor }
+        val drop = if (start < 0) excess else minOf(start, excess)
+        if (drop == 0) return false
+        lines.subList(0, drop).clear()
+        return true
+    }
+
+    private fun persist() { history.save(encodeLines(lines)) }
+
     private fun save() {
-        while (lines.size > KEPT_LINES) lines.removeAt(0)
-        history.save(historyJson())
+        trimHistory()
+        persist()
         runCatching { onChange() }
     }
 
@@ -241,11 +259,6 @@ class Conversation(
          */
         fun said(reply: String): String = reply.substringBefore("【详情】").replace("【朗读】", "").trim()
 
-        /** How much of the conversation the assistant is shown. */
-        const val CONTEXT_LINES = 20
         const val KEPT_LINES = 100
-
-        /** How many of the latest pictures the assistant is still shown with each request. */
-        const val PICTURES_IN_VIEW = 4
     }
 }
